@@ -10,10 +10,15 @@ tt_platform_fee = 0.01
 tt_fee_address = "0xe9903588E2Ff2CF5Bd847eE375b765F14B59bce3"
 tt_webhook_url = "https://mi-bot-base.onrender.com/webhook/mi_clave_secreta_para_el_bot_123"
 
-# Evitar que muera la tarea interna del bot
+# Saltarse revisiones de versión
 version_check = false
 tt_version_check = false
 
-# Asegurar que se activen las librerías internas
+# ACTIVAR MÓDULOS DEL BOT (Evita los AttributeError)
 tt_enabled = true
 bot_enabled = true
+iamlistening_enabled = true
+cefi_enabled = true
+dxsp_enabled = true
+myllm_enabled = true
+talkytrend_enabled = true
