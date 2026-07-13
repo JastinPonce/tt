@@ -1,3 +1,4 @@
+# Bloque base para el Core de Talky
 [default]
 loglevel = "INFO"
 thirdparty_lib_loglevel = "INFO"
@@ -21,7 +22,7 @@ tt_enabled = true
 bot_enabled = true
 iamlistening_enabled = true
 
-# El formato exacto que mapea el bucle interno de inicialización
-[default.iamlistening.platform.0]
-platform = "telegram"
+# BLOQUE RAÍZ INDEPENDIENTE (Sin prefijo default)
+[iamlistening]
+[iamlistening.platform.telegram]
 bot_token = "8717095861:AAHA_NONJgQELKt-PuxB0hybSdbqX_D25u0"
