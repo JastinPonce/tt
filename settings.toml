@@ -10,10 +10,15 @@ tt_platform_fee = 0.01
 tt_fee_address = "0xe9903588E2Ff2CF5Bd847eE375b765F14B59bce3"
 tt_webhook_url = "https://mi-bot-base.onrender.com/webhook/mi_clave_secreta_para_el_bot_123"
 
+# Rutas críticas del sistema de plugins
+plugin_directory = "tt/plugins"
+tt_plugin_directory = "tt/plugins"
+
+# Desactivar revisiones de actualización externa
 version_check = false
 tt_version_check = false
 
-# 1. Formato Global estándar
+# Habilitar los módulos principales
 tt_enabled = true
 bot_enabled = true
 iamlistening_enabled = true
@@ -21,25 +26,7 @@ cefi_enabled = true
 dxsp_enabled = true
 myllm_enabled = true
 
-# 2. Formato con prefijo repetido (El truco que a veces exige Dynaconf)
-iamlistening_iamlistening_enabled = true
-cefi_cefi_enabled = true
-dxsp_dxsp_enabled = true
-myllm_myllm_enabled = true
-
-# 3. Formato estructurado por bloques de librería
-[iamlistening]
-iamlistening_enabled = true
-enabled = true
-
-[cefi]
-cefi_enabled = true
-enabled = true
-
-[dxsp]
-dxsp_enabled = true
-enabled = true
-
-[myllm]
-myllm_enabled = true
-enabled = true
+# Configuración obligatoria para que el "listener" no cargue 0 clientes
+[default.iamlistening]
+[default.iamlistening.platform.telegram]
+bot_token = "8717095861:AAHA_NONJgQELKt-PuxB0hybSdbqX_D25u0"
