@@ -13,17 +13,15 @@ tt_webhook_url = "https://mi-bot-base.onrender.com/webhook/mi_clave_secreta_para
 version_check = false
 tt_version_check = false
 
-# Dejamos solo la ruta de plugins base que la librería autogenera
 plugin_directory = "tt.plugins"
 tt_plugin_directory = "tt.plugins"
 authorized_plugins = []
 
-# Módulos activos
 tt_enabled = true
 bot_enabled = true
 iamlistening_enabled = true
 
-# Forzar el bloque de Telegram con la sintaxis exacta que Dynaconf exige para sub-tablas
-[default.iamlistening]
+# Estructura jerárquica nativa obligatoria para iamlistening
+[default.iamlistening.platform.0]
 platform = "telegram"
 bot_token = "8717095861:AAHA_NONJgQELKt-PuxB0hybSdbqX_D25u0"
