@@ -21,6 +21,7 @@ tt_enabled = true
 bot_enabled = true
 iamlistening_enabled = true
 
-# Estructura nativa que remueve el Warning de 'No platform table found'
-[default.iamlistening.platform.telegram]
+# El formato exacto que mapea el bucle interno de inicialización
+[default.iamlistening.platform.0]
+platform = "telegram"
 bot_token = "8717095861:AAHA_NONJgQELKt-PuxB0hybSdbqX_D25u0"
