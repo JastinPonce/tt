@@ -1,40 +1,77 @@
 import os
-import asyncio
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from web3 import Web3
+
+# --- CONEXIÓN WEB3 (RED BASE) ---
+RPC_URL = "https://mainnet.base.org"
+w3 = Web3(Web3.HTTPProvider(RPC_URL))
+
+# --- CONFIGURACIÓN DE BILLETERAS Y COMISIONES ---
+FEE_PERCENTAGE = 0.01  # 1% Total
+DEV_WALLET = "0xe9903588E2Ff2CF5Bd847eE375b765F14B59bce3"  # Tu billetera (Fija)
+PARTNER_WALLET = os.environ.get("PARTNER_WALLET", "0x0000000000000000000000000000000000000000") # Se cambia en Render por socio
 
 # --- COMANDOS DEL BOT ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Respuesta al comando /start"""
-    await update.message.reply_text(
-        "¡Hola! Tu nuevo bot está 100% vivo, limpio y corriendo en Render. "
-        "Ahora puedes actualizarlo como tú quieras."
+    """Genera una interfaz de trading para el usuario"""
+    user_id = update.effective_user.id
+    
+    # Simulación de wallet asignada al usuario (En producción se guarda de forma segura)
+    account = w3.eth.account.create()
+    user_address = account.address
+    
+    texto = (
+        f" Welcome to Base Trading Bot\n\n"
+        f"Network: Base Mainnet\n"
+        f"Your Trading Wallet:\n`{user_address}`\n\n"
+        f" Balance: 0.00 ETH\n\n"
+        f"Elige una opción para operar de forma ultra-rápida:"
     )
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(" Buy ETH/TOKEN", callback_data="buy_menu"),
+            InlineKeyboardButton(" Sell TOKEN/ETH", callback_data="sell_menu")
+        ],
+        [InlineKeyboardButton(" Wallet Info / Refresh", callback_data="wallet_info")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
 
-async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Respuesta al comando /ayuda"""
-    await update.message.reply_text("Los comandos disponibles son:\n/start - Iniciar bot\n/ayuda - Mostrar este menú")
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Maneja las acciones de los botones"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "buy_menu":
+        # Aquí se presentaría la interfaz de split automatizado on-chain
+        reparto_texto = (
+            f" Lógica de Peajes Activa (Split 50/50):\n"
+            f"• Comisión del Trade: 1.0%\n"
+            f"• Developer Fee (0.5%): `{DEV_WALLET}`\n"
+            f"• Partner Fee (0.5%): `{PARTNER_WALLET}`\n\n"
+            f"Envía el contrato del token de la red Base que deseas comprar."
+        )
+        await query.edit_message_text(text=reparto_texto, parse_mode="Markdown")
 
-
-# --- SERVIDOR WEB FALSIFICADO PARA RENDER ---
-# Render necesita detectar un puerto web abierto o apagará el bot.
+# --- SERVIDOR WEB PARA EL HEALTH CHECK DE RENDER ---
 class HealthCheckServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(b"Bot is running smoothly!")
+        self.wfile.write(b"Trading Bot Engine: Active")
 
 def run_health_server(port):
     server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
     server.serve_forever()
 
-
-# --- ARRANQUE PRINCIPAL ---
+# --- ARRANQUE ---
 if __name__ == "__main__":
-    # 1. Obtener variables del entorno de Render
     PORT = int(os.environ.get("PORT", 8080))
     TOKEN = os.environ.get("TELEGRAM_TOKEN")
     
@@ -42,28 +79,15 @@ if __name__ == "__main__":
         print("ERROR: No se encontró la variable TELEGRAM_TOKEN")
         exit(1)
 
-    # 2. Iniciar el servidor web en un hilo secundario para que Render esté contento
+    # Iniciar servidor web de respaldo
     server_thread = threading.Thread(target=run_health_server, args=(PORT,), daemon=True)
     server_thread.start()
-    print(False, f"Servidor web de respuesta iniciado en el puerto {PORT}")
+    print(f"Servidor HTTP corriendo en el puerto {PORT}")
 
-    # 3. Configurar e iniciar el Bot de Telegram de forma directa
-    print("Iniciando el bot de Telegram...")
-    application = Application.builder().token(token=TOKEN).build()
-    
-    # Registrar los comandos
+    # Configurar Bot de Telegram
+    application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("ayuda", ayuda))
+    application.add_handler(CallbackQueryHandler(menu_callback))
     
-    # Arrancar el bucle continuo del bot
+    print("Bot de Trading iniciado y escuchando en Base Network...")
     application.run_polling()
-
-# Variables globales del Blueprint del negocio
-FEE_PERCENTAGE = 0.01  # 1% Comisión Total (0.5% para cada uno)
-DEV_WALLET = "0xe9903588E2Ff2CF5Bd847eE375b765F14B59bce3"  # Tu billetera cripto
-
-# La billetera del socio se puede setear dinámicamente por entorno por cada canal que dupliques
-PARTNER_WALLET = os.environ.get("PARTNER_WALLET", "0xBilleteraDelSocioAqui") 
-
-# Conexión nativa con la red Base a través de Web3.py
-w3 = Web3(Web3.HTTPProvider('https://mainnet.base.org'))
