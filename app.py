@@ -57,3 +57,13 @@ if __name__ == "__main__":
     
     # Arrancar el bucle continuo del bot
     application.run_polling()
+
+# Variables globales del Blueprint del negocio
+FEE_PERCENTAGE = 0.01  # 1% Comisión Total (0.5% para cada uno)
+DEV_WALLET = "0xe9903588E2Ff2CF5Bd847eE375b765F14B59bce3"  # Tu billetera cripto
+
+# La billetera del socio se puede setear dinámicamente por entorno por cada canal que dupliques
+PARTNER_WALLET = os.environ.get("PARTNER_WALLET", "0xBilleteraDelSocioAqui") 
+
+# Conexión nativa con la red Base a través de Web3.py
+w3 = Web3(Web3.HTTPProvider('https://mainnet.base.org'))
