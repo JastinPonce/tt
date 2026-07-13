@@ -10,23 +10,25 @@ tt_platform_fee = 0.01
 tt_fee_address = "0xe9903588E2Ff2CF5Bd847eE375b765F14B59bce3"
 tt_webhook_url = "https://mi-bot-base.onrender.com/webhook/mi_clave_secreta_para_el_bot_123"
 
-# Rutas críticas del sistema de plugins
-plugin_directory = "tt/plugins"
-tt_plugin_directory = "tt/plugins"
-
-# Desactivar revisiones de actualización externa
+# Evitar comprobaciones externas
 version_check = false
 tt_version_check = false
 
-# Habilitar los módulos principales
+# Configuración del Administrador de Plugins
+plugin_directory = "tt/plugins"
+tt_plugin_directory = "tt/plugins"
+authorized_plugins = ["example_plugin", "talky_blueprint", "base_plugin"]
+
+# Activación general de módulos
 tt_enabled = true
 bot_enabled = true
 iamlistening_enabled = true
-cefi_enabled = true
-dxsp_enabled = true
-myllm_enabled = true
+cefi_enabled = false
+dxsp_enabled = false
+myllm_enabled = false
 
-# Configuración obligatoria para que el "listener" no cargue 0 clientes
-[default.iamlistening]
-[default.iamlistening.platform.telegram]
+# Bloque estructural nativo para el cliente de Telegram
+[iamlistening]
+[iamlistening.platform]
+[iamlistening.platform.telegram]
 bot_token = "8717095861:AAHA_NONJgQELKt-PuxB0hybSdbqX_D25u0"
