@@ -1,5 +1,6 @@
 import os
 import threading
+import sqlite3
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -10,7 +11,6 @@ from cryptography.fernet import Fernet
 RPC_URL = "https://mainnet.base.org"
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 
-# ABI Mínimo estándar ERC-20
 ERC20_ABI = [
     {"constant": True, "inputs": [], "name": "name", "outputs": [{"name": "", "type": "string"}], "payable": False, "stateMutability": "view", "type": "function"},
     {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "payable": False, "stateMutability": "view", "type": "function"}
@@ -23,29 +23,82 @@ if not MASTER_KEY:
 
 cipher_suite = Fernet(MASTER_KEY.encode())
 
-# Base de datos local para almacenar usuarios y referidos
-USER_DATABASE = {}
+# --- BASE DE DATOS PERSISTENTE (SQLITE) ---
+DB_FILE = "bot_database.db"
+
+def init_db():
+    """Crea las tablas de forma persistente si no existen al arrancar el bot"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            user_id INTEGER PRIMARY KEY,
+            address TEXT UNIQUE,
+            encrypted_private_key TEXT,
+            auto_buy INTEGER DEFAULT 0,
+            auto_buy_amount REAL DEFAULT 0.05,
+            referido_por INTEGER,
+            contador_referidos INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
 
 DEV_WALLET = "0xe9903588E2Ff2CF5Bd847eE375b765F14B59bce3"
 PARTNER_WALLET = os.environ.get("PARTNER_WALLET", "0x0000000000000000000000000000000000000000")
 
+def obtener_usuario(user_id):
+    """Recupera los datos de un usuario desde la base de datos"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT address, encrypted_private_key, auto_buy, auto_buy_amount, referido_por, contador_referidos FROM usuarios WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {
+            "address": row[0],
+            "encrypted_private_key": row[1],
+            "auto_buy": bool(row[2]),
+            "auto_buy_amount": row[3],
+            "referido_por": row[4],
+            "contador_referidos": row[5]
+        }
+    return None
+
 def inicializar_usuario_si_no_existe(user_id, referido_por=None):
-    if user_id not in USER_DATABASE:
+    """Registra de forma segura al usuario en la base de datos persistente"""
+    user_data = obtener_usuario(user_id)
+    if not user_data:
         new_account = w3.eth.account.create()
         clave_privada_bytes = new_account.key.hex().encode()
         clave_encriptada = cipher_suite.encrypt(clave_privada_bytes).decode()
         
-        USER_DATABASE[user_id] = {
-            "address": new_account.address,
-            "encrypted_private_key": clave_encriptada,
-            "auto_buy": False,
-            "auto_buy_amount": 0.05,
-            "referido_por": referido_por,
-            "contador_referidos": 0
-        }
-        
-        if referido_por and referido_por in USER_DATABASE:
-            USER_DATABASE[referido_por]["contador_referidos"] += 1
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO usuarios (user_id, address, encrypted_private_key, referido_por)
+                VALUES (?, ?, ?, ?)
+            """, (user_id, new_account.address, clave_encriptada, referido_por))
+            
+            # Incrementar el contador del padrino si aplica
+            if referido_por:
+                cursor.execute("UPDATE usuarios SET contador_referidos = contador_referidos + 1 WHERE user_id = ?", (referido_por,))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            pass
+        finally:
+            conn.close()
+
+def actualizar_preferencia(user_id, columna, valor):
+    """Helper para actualizar configuraciones de usuario rápidamente"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE usuarios SET {columna} = ? WHERE user_id = ?", (valor, user_id))
+    conn.commit()
+    conn.close()
 
 def obtener_balance_real(address):
     try:
@@ -80,13 +133,12 @@ def calcular_triple_split_comision(amount_in_eth, tiene_padrino=False):
             "remaining_eth": w3.from_wei(remaining_amount_wei, 'ether')
         }
 
-# --- MENÚ PRINCIPAL OPTIMIZADO (COPIADO RÁPIDO) ---
+# --- MENÚS DE INTERFAZ ---
 def generar_menu_principal(user_id):
-    user_data = USER_DATABASE[user_id]
+    user_data = obtener_usuario(user_id)
     wallet_address = user_data["address"]
     balance = obtener_balance_real(wallet_address)
     
-    # Ponemos la wallet entera en código para que al tocar la dirección corta en el menú, se copie completa
     wallet_corta = f"`{wallet_address}`" 
     status_sniper = "🟢 Activo" if user_data["auto_buy"] else "🔴 Inactivo"
     
@@ -114,10 +166,8 @@ def generar_menu_principal(user_id):
     ]
     return texto, InlineKeyboardMarkup(keyboard)
 
-
-# --- INTERFAZ DE REFERIDOS OPTIMIZADA (COPIADO RÁPIDO + COMPARTIR) ---
 def generar_menu_referidos(user_id, bot_username):
-    user_data = USER_DATABASE[user_id]
+    user_data = obtener_usuario(user_id)
     cant_referidos = user_data["contador_referidos"]
     link_referido = f"https://t.me/{bot_username}?start={user_id}"
     
@@ -129,10 +179,9 @@ def generar_menu_referidos(user_id, bot_username):
         f"• Amigos invitados: `{cant_referidos}`\n"
         f"• Tu comisión: *20% del peaje (0.2% neto de cada swap)*\n\n"
         f"🔗 *Tu Enlace Único (Toca para copiar):*\n"
-        f"`{link_referido}`" # Al estar entre comillas invertidas, se copia al portapapeles con un clic
+        f"`{link_referido}`"
     )
     
-    # Agregamos un botón nativo de Telegram que abre la lista de chats para compartir el link de una vez
     url_compartir = f"https://t.me/share/url?url={link_referido}&text=Prueba%20este%20bot%20sniper%20ultra%20rápido%20en%20la%20red%20Base!%20🚀"
     
     keyboard = [
@@ -142,7 +191,7 @@ def generar_menu_referidos(user_id, bot_username):
     return texto_referidos, InlineKeyboardMarkup(keyboard)
 
 def generar_menu_settings(user_id):
-    user_data = USER_DATABASE[user_id]
+    user_data = obtener_usuario(user_id)
     status_emoji = "🟢 ACTIVADO" if user_data["auto_buy"] else "🔴 DESACTIVADO"
     monto = user_data["auto_buy_amount"]
     
@@ -166,7 +215,7 @@ def generar_menu_settings(user_id):
 async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     inicializar_usuario_si_no_existe(user_id)
-    user_data = USER_DATABASE[user_id]
+    user_data = obtener_usuario(user_id)
     texto_usuario = update.message.text.strip()
     
     if w3.is_address(texto_usuario):
@@ -207,14 +256,14 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("👋 Envía un contrato válido de Base (Ej: empezando con `0x`).")
 
-# --- CONTROLADOR CALLBACK (CORREGIDO AL 100%) ---
+# --- CONTROLADOR CALLBACK ---
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
     user_id = update.effective_user.id
     inicializar_usuario_si_no_existe(user_id)
-    user_data = USER_DATABASE[user_id]
+    user_data = obtener_usuario(user_id)
     
     if query.data == "back_main":
         texto, reply_markup = generar_menu_principal(user_id)
@@ -234,7 +283,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "toggle_autobuy":
-        user_data["auto_buy"] = not user_data["auto_buy"]
+        nuevo_estado = 1 if not user_data["auto_buy"] else 0
+        actualizar_preferencia(user_id, "auto_buy", nuevo_estado)
         texto, reply_markup = generar_menu_settings(user_id)
         await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
         return
@@ -242,7 +292,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "config_monto":
         montos_disponibles = [0.05, 0.1, 0.25, 0.5]
         idx_actual = montos_disponibles.index(user_data["auto_buy_amount"])
-        user_data["auto_buy_amount"] = montos_disponibles[(idx_actual + 1) % len(montos_disponibles)]
+        nuevo_monto = montos_disponibles[(idx_actual + 1) % len(montos_disponibles)]
+        actualizar_preferencia(user_id, "auto_buy_amount", nuevo_monto)
         texto, reply_markup = generar_menu_settings(user_id)
         await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
         return
