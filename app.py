@@ -230,7 +230,7 @@ def generar_menu_settings(user_id):
     ]
     return texto_settings, InlineKeyboardMarkup(keyboard)
 
-# --- DETECTAR CONTRATOS CON PRECIO REAL OBTENIDIO DE API ---
+# --- DETECTAR CONTRATOS OPTIMIZADO PARA MICRO-TRADES ---
 async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     inicializar_usuario_si_no_existe(user_id)
@@ -242,12 +242,11 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await update.message.reply_text("🔍 _Consultando nodos de Base y liquidez... [⏳]_", parse_mode="Markdown")
         
         try:
-            # 1. Obtener datos básicos del contrato vía Web3
             contrato = w3.eth.contract(address=token_address, abi=ERC20_ABI)
             nombre = contrato.functions.name().call()
             simbolo = contrato.functions.symbol().call()
             
-            # 2. Consultar precio en tiempo real mediante API pública de GeckoTerminal
+            # Consultar precio vía API de GeckoTerminal
             precio_usd = 0.0
             try:
                 url = f"https://api.geckoterminal.com/api/v2/networks/base/tokens/{token_address}"
@@ -256,16 +255,14 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data = json.loads(response.read().decode())
                     precio_usd = float(data['data']['attributes']['price_usd'])
             except Exception:
-                # Si el token es extremadamente nuevo o la API tarda, usamos un precio base de simulación
                 precio_usd = 0.00125 
 
-            # 3. Consultar precio de ETH aproximado para la conversión técnica
-            eth_precio_estimado = 3500.0  # Base estándar de conversión
+            eth_precio_estimado = 3500.0  # Conversión base a USD
             
             if user_data["auto_buy"]:
                 monto_sniper = user_data["auto_buy_amount"]
-                # Calcular cuántos tokens compraría con ese ETH
-                tokens_comprados = (monto_sniper * eth_precio_estimado) / precio_usd
+                monto_en_usd = monto_sniper * eth_precio_estimado
+                tokens_comprados = monto_en_usd / precio_usd
                 
                 registrar_transaccion(user_id, "COMPRA", monto_sniper, simbolo)
                 
@@ -273,29 +270,36 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🚀 *⚡ MODO SNIPER ACTIVADO ⚡*\n\n"
                     f"📈 *Token:* {nombre} (`{simbolo}`)\n"
                     f"💰 *Precio USD:* `${precio_usd:.6f}`\n"
-                    f"🛒 *Acción:* ¡Compra completada por *{monto_sniper} ETH*!\n"
+                    f"🛒 *Acción:* ¡Compra completada por *{monto_sniper} ETH* (~${monto_en_usd:.2f} USD)!\n"
                     f"📦 *Recibiste:* `{tokens_comprados:,.2f} {simbolo}`\n\n"
                     f"ℹ️ _Revisa tu panel principal para ver tu historial actualizado._"
                 )
                 await status_msg.edit_text(text=texto_sniper, parse_mode="Markdown")
                 return
 
-            # Caso manual: Calcular estimaciones para los botones
-            tokens_opcion1 = (0.01 * eth_precio_estimado) / precio_usd
-            tokens_opcion2 = (0.05 * eth_precio_estimado) / precio_usd
+            # NUEVOS MONTOS MÁS PEQUEÑOS Y CLAROS PARA EL USUARIO PROMEDIO
+            opcion1_eth = 0.002
+            opcion2_eth = 0.005
+            
+            usd_opcion1 = opcion1_eth * eth_precio_estimado
+            usd_opcion2 = opcion2_eth * eth_precio_estimado
+            
+            tokens_opcion1 = usd_opcion1 / precio_usd
+            tokens_opcion2 = usd_opcion2 / precio_usd
 
             texto_token = (
                 f"📈 *Gema Detectada:* {nombre} (`{simbolo}`)\n"
                 f"💵 *Precio Actual:* `${precio_usd:.6f} USD`\n"
                 f"📍 *Contrato:* `{token_address}`\n\n"
-                f"Selecciona la cantidad de ETH para tu Swap inmediato:\n"
-                f"• Con *0.01 ETH* recibes: ~`{tokens_opcion1:,.2f} {simbolo}`\n"
-                f"• Con *0.05 ETH* recibes: ~`{tokens_opcion2:,.2f} {simbolo}`"
+                f"💬 *Selecciona tu monto de compra:* \n"
+                f"• 🟢 *{opcion1_eth} ETH* (~${usd_opcion1:.2f} USD) ➔ Recibes: `{tokens_opcion1:,.2f}` {simbolo}\n"
+                f"• 🟢 *{opcion2_eth} ETH* (~${usd_opcion2:.2f} USD) ➔ Recibes: `{tokens_opcion2:,.2f}` {simbolo}"
             )
+            
             keyboard = [
                 [
-                    InlineKeyboardButton("🟢 0.01 ETH", callback_data=f"buy_token_0.01_{simbolo}"),
-                    InlineKeyboardButton("🟢 0.05 ETH", callback_data=f"buy_token_0.05_{simbolo}")
+                    InlineKeyboardButton(f"🟢 {opcion1_eth} ETH", callback_data=f"buy_token_{opcion1_eth}_{simbolo}"),
+                    InlineKeyboardButton(f"🟢 {opcion2_eth} ETH", callback_data=f"buy_token_{opcion2_eth}_{simbolo}")
                 ],
                 [InlineKeyboardButton("❌ Cancelar Orden", callback_data="back_main")]
             ]
