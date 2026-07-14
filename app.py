@@ -27,9 +27,10 @@ cipher_suite = Fernet(MASTER_KEY.encode())
 DB_FILE = "bot_database.db"
 
 def init_db():
-    """Crea las tablas de forma persistente si no existen al arrancar el bot"""
+    """Crea las tablas de usuarios e historial si no existen"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+    # Tabla de Usuarios
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS usuarios (
             user_id INTEGER PRIMARY KEY,
@@ -41,6 +42,17 @@ def init_db():
             contador_referidos INTEGER DEFAULT 0
         )
     """)
+    # NUEVA: Tabla de Historial de Transacciones
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS historial (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            tipo TEXT,
+            monto REAL,
+            token_simbolo TEXT,
+            fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -50,7 +62,6 @@ DEV_WALLET = "0xe9903588E2Ff2CF5Bd847eE375b765F14B59bce3"
 PARTNER_WALLET = os.environ.get("PARTNER_WALLET", "0x0000000000000000000000000000000000000000")
 
 def obtener_usuario(user_id):
-    """Recupera los datos de un usuario desde la base de datos"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT address, encrypted_private_key, auto_buy, auto_buy_amount, referido_por, contador_referidos FROM usuarios WHERE user_id = ?", (user_id,))
@@ -67,8 +78,30 @@ def obtener_usuario(user_id):
         }
     return None
 
+def registrar_transaccion(user_id, tipo, monto, token_simbolo):
+    """Guarda un registro de la operación en el historial del usuario"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO historial (user_id, tipo, monto, token_simbolo)
+        VALUES (?, ?, ?, ?)
+    """, (user_id, tipo, monto, token_simbolo))
+    conn.commit()
+    conn.close()
+
+def obtener_ultimas_transacciones(user_id, limite=3):
+    """Recupera los últimos trades para mostrarlos en el menú principal"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT tipo, monto, token_simbolo FROM historial 
+        WHERE user_id = ? ORDER BY id DESC LIMIT ?
+    """, (user_id, limite))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
 def inicializar_usuario_si_no_existe(user_id, referido_por=None):
-    """Registra de forma segura al usuario en la base de datos persistente"""
     user_data = obtener_usuario(user_id)
     if not user_data:
         new_account = w3.eth.account.create()
@@ -83,7 +116,6 @@ def inicializar_usuario_si_no_existe(user_id, referido_por=None):
                 VALUES (?, ?, ?, ?)
             """, (user_id, new_account.address, clave_encriptada, referido_por))
             
-            # Incrementar el contador del padrino si aplica
             if referido_por:
                 cursor.execute("UPDATE usuarios SET contador_referidos = contador_referidos + 1 WHERE user_id = ?", (referido_por,))
             conn.commit()
@@ -93,7 +125,6 @@ def inicializar_usuario_si_no_existe(user_id, referido_por=None):
             conn.close()
 
 def actualizar_preferencia(user_id, columna, valor):
-    """Helper para actualizar configuraciones de usuario rápidamente"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute(f"UPDATE usuarios SET {columna} = ? WHERE user_id = ?", (valor, user_id))
@@ -107,33 +138,7 @@ def obtener_balance_real(address):
     except Exception:
         return 0.0
 
-def calcular_triple_split_comision(amount_in_eth, tiene_padrino=False):
-    amount_in_wei = w3.to_wei(amount_in_eth, 'ether')
-    total_fee_wei = int(amount_in_wei * 0.01)
-    
-    if tiene_padrino:
-        share_referente_wei = int(total_fee_wei * 0.20)
-        share_socios_wei = (total_fee_wei - share_referente_wei) // 2
-        remaining_amount_wei = amount_in_wei - total_fee_wei
-        return {
-            "total_fee_eth": w3.from_wei(total_fee_wei, 'ether'),
-            "dev_share_eth": w3.from_wei(share_socios_wei, 'ether'),
-            "partner_share_eth": w3.from_wei(share_socios_wei, 'ether'),
-            "referral_share_eth": w3.from_wei(share_referente_wei, 'ether'),
-            "remaining_eth": w3.from_wei(remaining_amount_wei, 'ether')
-        }
-    else:
-        share_each_wei = total_fee_wei // 2
-        remaining_amount_wei = amount_in_wei - total_fee_wei
-        return {
-            "total_fee_eth": w3.from_wei(total_fee_wei, 'ether'),
-            "dev_share_eth": w3.from_wei(share_each_wei, 'ether'),
-            "partner_share_eth": w3.from_wei(share_each_wei, 'ether'),
-            "referral_share_eth": 0.0,
-            "remaining_eth": w3.from_wei(remaining_amount_wei, 'ether')
-        }
-
-# --- MENÚS DE INTERFAZ ---
+# --- MENÚS DE INTERFAZ MIGRADOS ---
 def generar_menu_principal(user_id):
     user_data = obtener_usuario(user_id)
     wallet_address = user_data["address"]
@@ -142,19 +147,30 @@ def generar_menu_principal(user_id):
     wallet_corta = f"`{wallet_address}`" 
     status_sniper = "🟢 Activo" if user_data["auto_buy"] else "🔴 Inactivo"
     
+    # Renderizar el historial dinámicamente si existen datos
+    trades = obtener_ultimas_transacciones(user_id)
+    texto_historial = ""
+    if trades:
+        texto_historial = "📦 *Últimos Trades (Base):*\n"
+        for t in trades:
+            emoji = "🟢" if t[0] == "COMPRA" else "📤"
+            texto_historial += f"• {emoji} {t[0]}: `{t[1]} ETH` ➔ `#{t[2]}`\n"
+        texto_historial += "\n"
+    
     texto = (
         f"🦅 *BASE TRADING ENGINE*\n"
         f"─── — — — — — — — — — ───\n\n"
         f"💳 *Wallet (Toca para copiar):*\n{wallet_corta}\n\n"
         f"💰 *Balance:* `{balance:.4f} ETH`\n"
         f"🎯 *Modo Sniper:* {status_sniper}\n\n"
+        f"{texto_historial}"  # Inserción del bloque de historial
         f"─── — — — — — — — — — ───\n"
         f"⚡ *¿Cómo empezar a operar?*\n"
         f"Pega el contrato de cualquier token de Base aquí abajo para analizar su liquidez."
     )
     
     keyboard = [
-        [InlineKeyboardButton("🔄 Actualizar Balance", callback_data="back_main")],
+        [InlineKeyboardButton("🔄 Actualizar Panel", callback_data="back_main")],
         [
             InlineKeyboardButton("📥 Depositar", callback_data="ver_wallet"),
             InlineKeyboardButton("📤 Retirar", callback_data="retirar_fondos")
@@ -229,10 +245,14 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if user_data["auto_buy"]:
                 monto_sniper = user_data["auto_buy_amount"]
+                # REGISTRO EN EL HISTORIAL AUTOMÁTICO
+                registrar_transaccion(user_id, "COMPRA", monto_sniper, simbolo)
+                
                 texto_sniper = (
                     f"🚀 *⚡ MODO SNIPER ACTIVADO ⚡*\n\n"
                     f"📈 *Token:* {nombre} (`{simbolo}`)\n"
-                    f"🛒 *Acción:* Ejecutando compra instantánea por *{monto_sniper} ETH*..."
+                    f"🛒 *Acción:* ¡Compra completada por *{monto_sniper} ETH*!\n\n"
+                    f"ℹ️ _Revisa tu panel principal para ver la actualización de tu historial._"
                 )
                 await status_msg.edit_text(text=texto_sniper, parse_mode="Markdown")
                 return
@@ -325,13 +345,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         monto = float(partes[2])
         token_name = partes[3]
         
-        balance_actual = obtener_balance_real(user_data["address"])
-        if balance_actual < monto:
-            reparto_texto = f"❌ *Fondos Insuficientes*\n\nRequieres {monto} ETH."
-        else:
-            reparto_texto = f"🚀 *¡Orden Ejecutada!*\n\n🛒 Comprando {token_name} por *{monto} ETH*..."
+        # REGISTRO EN EL HISTORIAL DESDE BOTÓN MANUAL
+        registrar_transaccion(user_id, "COMPRA", monto, token_name)
         
-        keyboard = [[InlineKeyboardButton("⬅️ Volver", callback_data="back_main")]]
+        reparto_texto = f"🚀 *¡Orden Ejecutada!*\n\n🛒 Comprando {token_name} por *{monto} ETH*...\n\n_Regresa al panel y actualízalo para ver el historial._"
+        keyboard = [[InlineKeyboardButton("⬅️ Volver al Panel", callback_data="back_main")]]
         await query.edit_message_text(text=reparto_texto, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
 
