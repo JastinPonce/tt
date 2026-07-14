@@ -277,9 +277,18 @@ if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 8080))
     TOKEN = os.environ.get("TELEGRAM_TOKEN")
     
-    threading.Thread(target=lambda: HTTPServer(("0.0.0.0", PORT), HealthCheckServer).serve_forever(), daemon=True).start()
+    # Servidor de Health Check en un hilo limpio estándar
+    def iniciar_servidor():
+        server = HTTPServer(("0.0.0.0", PORT), HealthCheckServer)
+        server.serve_forever()
+        
+    threading.Thread(target=iniciar_servidor, daemon=True).start()
 
+    # Inicialización estándar de la aplicación de Telegram
     application = Application.builder().token(TOKEN).build()
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(menu_callback))
-    application
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, detectar_token))
+    
+    application.run_polling()
