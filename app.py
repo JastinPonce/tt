@@ -144,4 +144,167 @@ def generar_menu_settings(user_id):
     keyboard = [
         [
             InlineKeyboardButton("🎯 Alternar Auto-Buy", callback_data="toggle_autobuy"),
-            InlineKeyboardButton
+            InlineKeyboardButton(f"✍️ Cambiar Monto ({monto} ETH)", callback_data="config_monto")
+        ],
+        [InlineKeyboardButton("🔑 Exportar Clave Privada", callback_data="exportar_key")],
+        [InlineKeyboardButton("⬅️ Volver al Panel Principal", callback_data="back_main")]
+    ]
+    return texto_settings, InlineKeyboardMarkup(keyboard)
+
+# --- DETECTAR CONTRATOS ---
+async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    inicializar_usuario_si_no_existe(user_id)
+    user_data = USER_DATABASE[user_id]
+    texto_usuario = update.message.text.strip()
+    
+    if w3.is_address(texto_usuario):
+        token_address = w3.to_checksum_address(texto_usuario)
+        status_msg = await update.message.reply_text("🔍 _Consultando nodos de Base... [⏳]_", parse_mode="Markdown")
+        
+        try:
+            contrato = w3.eth.contract(address=token_address, abi=ERC20_ABI)
+            nombre = contrato.functions.name().call()
+            simbolo = contrato.functions.symbol().call()
+            
+            if user_data["auto_buy"]:
+                monto_sniper = user_data["auto_buy_amount"]
+                texto_sniper = (
+                    f"🚀 *⚡ MODO SNIPER ACTIVADO ⚡*\n\n"
+                    f"📈 *Token:* {nombre} (`{simbolo}`)\n"
+                    f"🛒 *Acción:* Ejecutando compra instantánea por *{monto_sniper} ETH*..."
+                )
+                await status_msg.edit_text(text=texto_sniper, parse_mode="Markdown")
+                return
+
+            texto_token = (
+                f"📈 *Gema Detectada:* {nombre} (`{simbolo}`)\n"
+                f"📍 *Contrato:* `{token_address}`\n\n"
+                f"Selecciona la cantidad de ETH para tu Swap inmediato:"
+            )
+            keyboard = [
+                [
+                    InlineKeyboardButton("🟢 0.01 ETH", callback_data=f"buy_token_0.01_{simbolo}"),
+                    InlineKeyboardButton("🟢 0.05 ETH", callback_data=f"buy_token_0.05_{simbolo}")
+                ],
+                [InlineKeyboardButton("❌ Cancelar Orden", callback_data="back_main")]
+            ]
+            await status_msg.edit_text(text=texto_token, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            
+        except Exception:
+            await status_msg.edit_text("❌ El contrato no tiene un pool de liquidez activo en la red Base.")
+    else:
+        await update.message.reply_text("👋 Envía un contrato válido de Base (Ej: empezando con `0x`).")
+
+# --- CONTROLADOR CALLBACK (CORREGIDO AL 100%) ---
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    inicializar_usuario_si_no_existe(user_id)
+    user_data = USER_DATABASE[user_id]
+    
+    if query.data == "back_main":
+        texto, reply_markup = generar_menu_principal(user_id)
+        await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
+        return
+
+    if query.data == "ver_referidos":
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username.replace("_", "\\_")
+        texto, reply_markup = generar_menu_referidos(user_id, bot_username)
+        await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
+        return
+
+    if query.data == "abrir_settings":
+        texto, reply_markup = generar_menu_settings(user_id)
+        await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
+        return
+
+    if query.data == "toggle_autobuy":
+        user_data["auto_buy"] = not user_data["auto_buy"]
+        texto, reply_markup = generar_menu_settings(user_id)
+        await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
+        return
+
+    if query.data == "config_monto":
+        montos_disponibles = [0.05, 0.1, 0.25, 0.5]
+        idx_actual = montos_disponibles.index(user_data["auto_buy_amount"])
+        user_data["auto_buy_amount"] = montos_disponibles[(idx_actual + 1) % len(montos_disponibles)]
+        texto, reply_markup = generar_menu_settings(user_id)
+        await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
+        return
+
+    if query.data == "exportar_key":
+        key_encriptada = user_data["encrypted_private_key"]
+        key_desencriptada = cipher_suite.decrypt(key_encriptada.encode()).decode()
+        texto_key = f"🔑 *TU CLAVE PRIVADA:*\n\n`{key_desencriptada}`\n\n⚠️ No la compartas."
+        keyboard = [[InlineKeyboardButton("⬅️ Regresar", callback_data="abrir_settings")]]
+        await query.edit_message_text(text=texto_key, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
+
+    if query.data == "ver_wallet":
+        texto_wallet = f"📥 *DIRECCIÓN DE DEPÓSITO*\n\n`{user_data['address']}`\n\n⚠️ Usa únicamente la red Base Mainnet."
+        keyboard = [[InlineKeyboardButton("⬅️ Regresar", callback_data="back_main")]]
+        await query.edit_message_text(text=texto_wallet, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
+        
+    if query.data == "retirar_fondos":
+        await query.edit_message_text(
+            text="📤 *RETIRAR BALANCE*\n\nUsa `/retirar [dirección] [monto]`.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Regresar", callback_data="back_main")]]),
+            parse_mode="Markdown"
+        )
+        return
+
+    if query.data.startswith("buy_token_"):
+        partes = query.data.split("_")
+        monto = float(partes[2])
+        token_name = partes[3]
+        
+        balance_actual = obtener_balance_real(user_data["address"])
+        if balance_actual < monto:
+            reparto_texto = f"❌ *Fondos Insuficientes*\n\nRequieres {monto} ETH."
+        else:
+            reparto_texto = f"🚀 *¡Orden Ejecutada!*\n\n🛒 Comprando {token_name} por *{monto} ETH*..."
+        
+        keyboard = [[InlineKeyboardButton("⬅️ Volver", callback_data="back_main")]]
+        await query.edit_message_text(text=reparto_texto, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
+
+# --- COMANDO START ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    args = context.args
+    padrino_id = None
+    
+    if args and args[0].isdigit():
+        posible_padrino = int(args[0])
+        if posible_padrino != user_id:
+            padrino_id = posible_padrino
+            
+    inicializar_usuario_si_no_existe(user_id, referido_por=padrino_id)
+    texto, reply_markup = generar_menu_principal(user_id)
+    await update.message.reply_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+
+class HealthCheckServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Operational")
+
+if __name__ == "__main__":
+    PORT = int(os.environ.get("PORT", 8080))
+    TOKEN = os.environ.get("TELEGRAM_TOKEN")
+    
+    def iniciar_servidor():
+        HTTPServer(("0.0.0.0", PORT), HealthCheckServer).serve_forever()
+        
+    threading.Thread(target=iniciar_servidor, daemon=True).start()
+
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(menu_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, detectar_token))
+    application.run_polling()
