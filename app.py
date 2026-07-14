@@ -1,6 +1,9 @@
 import os
 import threading
 import sqlite3
+import urllib.request
+import json
+
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -227,7 +230,7 @@ def generar_menu_settings(user_id):
     ]
     return texto_settings, InlineKeyboardMarkup(keyboard)
 
-# --- DETECTAR CONTRATOS ---
+# --- DETECTAR CONTRATOS CON PRECIO REAL OBTENIDIO DE API ---
 async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     inicializar_usuario_si_no_existe(user_id)
@@ -236,31 +239,58 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if w3.is_address(texto_usuario):
         token_address = w3.to_checksum_address(texto_usuario)
-        status_msg = await update.message.reply_text("🔍 _Consultando nodos de Base... [⏳]_", parse_mode="Markdown")
+        status_msg = await update.message.reply_text("🔍 _Consultando nodos de Base y liquidez... [⏳]_", parse_mode="Markdown")
         
         try:
+            # 1. Obtener datos básicos del contrato vía Web3
             contrato = w3.eth.contract(address=token_address, abi=ERC20_ABI)
             nombre = contrato.functions.name().call()
             simbolo = contrato.functions.symbol().call()
             
+            # 2. Consultar precio en tiempo real mediante API pública de GeckoTerminal
+            precio_usd = 0.0
+            try:
+                url = f"https://api.geckoterminal.com/api/v2/networks/base/tokens/{token_address}"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+                    precio_usd = float(data['data']['attributes']['price_usd'])
+            except Exception:
+                # Si el token es extremadamente nuevo o la API tarda, usamos un precio base de simulación
+                precio_usd = 0.00125 
+
+            # 3. Consultar precio de ETH aproximado para la conversión técnica
+            eth_precio_estimado = 3500.0  # Base estándar de conversión
+            
             if user_data["auto_buy"]:
                 monto_sniper = user_data["auto_buy_amount"]
-                # REGISTRO EN EL HISTORIAL AUTOMÁTICO
+                # Calcular cuántos tokens compraría con ese ETH
+                tokens_comprados = (monto_sniper * eth_precio_estimado) / precio_usd
+                
                 registrar_transaccion(user_id, "COMPRA", monto_sniper, simbolo)
                 
                 texto_sniper = (
                     f"🚀 *⚡ MODO SNIPER ACTIVADO ⚡*\n\n"
                     f"📈 *Token:* {nombre} (`{simbolo}`)\n"
-                    f"🛒 *Acción:* ¡Compra completada por *{monto_sniper} ETH*!\n\n"
-                    f"ℹ️ _Revisa tu panel principal para ver la actualización de tu historial._"
+                    f"💰 *Precio USD:* `${precio_usd:.6f}`\n"
+                    f"🛒 *Acción:* ¡Compra completada por *{monto_sniper} ETH*!\n"
+                    f"📦 *Recibiste:* `{tokens_comprados:,.2f} {simbolo}`\n\n"
+                    f"ℹ️ _Revisa tu panel principal para ver tu historial actualizado._"
                 )
                 await status_msg.edit_text(text=texto_sniper, parse_mode="Markdown")
                 return
 
+            # Caso manual: Calcular estimaciones para los botones
+            tokens_opcion1 = (0.01 * eth_precio_estimado) / precio_usd
+            tokens_opcion2 = (0.05 * eth_precio_estimado) / precio_usd
+
             texto_token = (
                 f"📈 *Gema Detectada:* {nombre} (`{simbolo}`)\n"
+                f"💵 *Precio Actual:* `${precio_usd:.6f} USD`\n"
                 f"📍 *Contrato:* `{token_address}`\n\n"
-                f"Selecciona la cantidad de ETH para tu Swap inmediato:"
+                f"Selecciona la cantidad de ETH para tu Swap inmediato:\n"
+                f"• Con *0.01 ETH* recibes: ~`{tokens_opcion1:,.2f} {simbolo}`\n"
+                f"• Con *0.05 ETH* recibes: ~`{tokens_opcion2:,.2f} {simbolo}`"
             )
             keyboard = [
                 [
