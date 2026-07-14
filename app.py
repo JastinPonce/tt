@@ -210,5 +210,5 @@ if __name__ == "__main__":
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(menu_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,検出_token), callback=detectar_token)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, detectar_token))
     application.run_polling()
