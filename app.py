@@ -80,18 +80,20 @@ def calcular_triple_split_comision(amount_in_eth, tiene_padrino=False):
             "remaining_eth": w3.from_wei(remaining_amount_wei, 'ether')
         }
 
-# --- MENÚS DE INTERFAZ ---
+# --- MENÚ PRINCIPAL OPTIMIZADO (COPIADO RÁPIDO) ---
 def generar_menu_principal(user_id):
     user_data = USER_DATABASE[user_id]
     wallet_address = user_data["address"]
     balance = obtener_balance_real(wallet_address)
-    wallet_corta = f"{wallet_address[:6]}...{wallet_address[-4:]}"
+    
+    # Ponemos la wallet entera en código para que al tocar la dirección corta en el menú, se copie completa
+    wallet_corta = f"`{wallet_address}`" 
     status_sniper = "🟢 Activo" if user_data["auto_buy"] else "🔴 Inactivo"
     
     texto = (
         f"🦅 *BASE TRADING ENGINE*\n"
         f"─── — — — — — — — — — ───\n\n"
-        f"💳 *Wallet:* `{wallet_corta}`\n"
+        f"💳 *Wallet (Toca para copiar):*\n{wallet_corta}\n\n"
         f"💰 *Balance:* `{balance:.4f} ETH`\n"
         f"🎯 *Modo Sniper:* {status_sniper}\n\n"
         f"─── — — — — — — — — — ───\n"
@@ -112,6 +114,8 @@ def generar_menu_principal(user_id):
     ]
     return texto, InlineKeyboardMarkup(keyboard)
 
+
+# --- INTERFAZ DE REFERIDOS OPTIMIZADA (COPIADO RÁPIDO + COMPARTIR) ---
 def generar_menu_referidos(user_id, bot_username):
     user_data = USER_DATABASE[user_id]
     cant_referidos = user_data["contador_referidos"]
@@ -124,10 +128,17 @@ def generar_menu_referidos(user_id, bot_username):
         f"📈 *Tu Impacto Comercial:*\n"
         f"• Amigos invitados: `{cant_referidos}`\n"
         f"• Tu comisión: *20% del peaje (0.2% neto de cada swap)*\n\n"
-        f"🔗 *Tu Enlace Único de Invitación:*\n"
-        f"`{link_referido}`"
+        f"🔗 *Tu Enlace Único (Toca para copiar):*\n"
+        f"`{link_referido}`" # Al estar entre comillas invertidas, se copia al portapapeles con un clic
     )
-    keyboard = [[InlineKeyboardButton("⬅️ Volver al Panel Principal", callback_data="back_main")]]
+    
+    # Agregamos un botón nativo de Telegram que abre la lista de chats para compartir el link de una vez
+    url_compartir = f"https://t.me/share/url?url={link_referido}&text=Prueba%20este%20bot%20sniper%20ultra%20rápido%20en%20la%20red%20Base!%20🚀"
+    
+    keyboard = [
+        [InlineKeyboardButton("📢 Compartir Enlace con amigos", url=url_compartir)],
+        [InlineKeyboardButton("⬅️ Volver al Panel Principal", callback_data="back_main")]
+    ]
     return texto_referidos, InlineKeyboardMarkup(keyboard)
 
 def generar_menu_settings(user_id):
