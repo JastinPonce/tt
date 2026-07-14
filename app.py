@@ -230,13 +230,30 @@ def generar_menu_settings(user_id):
     ]
     return texto_settings, InlineKeyboardMarkup(keyboard)
 
-# --- DETECTAR CONTRATOS OPTIMIZADO PARA MICRO-TRADES ---
+# --- DETECTAR CONTRATOS CON BOTÓN CUSTOM ---
 async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     inicializar_usuario_si_no_existe(user_id)
     user_data = obtener_usuario(user_id)
     texto_usuario = update.message.text.strip()
     
+    # SI EL USUARIO ENVÍA UN NÚMERO (Es porque usó el botón de monto personalizado)
+    try:
+        monto_custom = float(texto_usuario)
+        if "esperando_monto_token" in context.user_data:
+            simbolo = context.user_data["esperando_monto_token"]
+            del context.user_data["esperando_monto_token"] # Limpiar estado
+            
+            registrar_transaccion(user_id, "COMPRA", monto_custom, simbolo)
+            await update.message.reply_text(
+                f"🚀 *¡Orden Ejecutada con Monto Personalizado!*\n\n🛒 Comprando {simbolo} por *{monto_custom} ETH* (~${(monto_custom * 3500):.2f} USD)...\n\n_Revisa tu panel principal para ver el historial._",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="back_main")]]),
+                parse_mode="Markdown"
+            )
+            return
+    except ValueError:
+        pass # No era un número, procedemos a ver si es un contrato
+
     if w3.is_address(texto_usuario):
         token_address = w3.to_checksum_address(texto_usuario)
         status_msg = await update.message.reply_text("🔍 _Consultando nodos de Base y liquidez... [⏳]_", parse_mode="Markdown")
@@ -246,7 +263,9 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nombre = contrato.functions.name().call()
             simbolo = contrato.functions.symbol().call()
             
-            # Consultar precio vía API de GeckoTerminal
+            # Guardar el símbolo en el contexto por si quiere usar monto personalizado
+            context.user_data["current_token_symbol"] = simbolo
+            
             precio_usd = 0.0
             try:
                 url = f"https://api.geckoterminal.com/api/v2/networks/base/tokens/{token_address}"
@@ -257,43 +276,31 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 precio_usd = 0.00125 
 
-            eth_precio_estimado = 3500.0  # Conversión base a USD
+            eth_precio_estimated = 3500.0
             
             if user_data["auto_buy"]:
                 monto_sniper = user_data["auto_buy_amount"]
-                monto_en_usd = monto_sniper * eth_precio_estimado
+                monto_en_usd = monto_sniper * eth_precio_estimated
                 tokens_comprados = monto_en_usd / precio_usd
-                
                 registrar_transaccion(user_id, "COMPRA", monto_sniper, simbolo)
                 
-                texto_sniper = (
-                    f"🚀 *⚡ MODO SNIPER ACTIVADO ⚡*\n\n"
-                    f"📈 *Token:* {nombre} (`{simbolo}`)\n"
-                    f"💰 *Precio USD:* `${precio_usd:.6f}`\n"
-                    f"🛒 *Acción:* ¡Compra completada por *{monto_sniper} ETH* (~${monto_en_usd:.2f} USD)!\n"
-                    f"📦 *Recibiste:* `{tokens_comprados:,.2f} {simbolo}`\n\n"
-                    f"ℹ️ _Revisa tu panel principal para ver tu historial actualizado._"
+                await status_msg.edit_text(
+                    text=f"🚀 *⚡ MODO SNIPER ACTIVADO ⚡*\n\n📈 *Token:* {nombre} (`{simbolo}`)\n💰 *Precio:* `${precio_usd:.6f}`\n🛒 *Acción:* ¡Compra de *{monto_sniper} ETH* (~${monto_en_usd:.2f} USD)!\n📦 *Recibiste:* `{tokens_comprados:,.2f} {simbolo}`",
+                    parse_mode="Markdown"
                 )
-                await status_msg.edit_text(text=texto_sniper, parse_mode="Markdown")
                 return
 
-            # NUEVOS MONTOS MÁS PEQUEÑOS Y CLAROS PARA EL USUARIO PROMEDIO
             opcion1_eth = 0.002
             opcion2_eth = 0.005
-            
-            usd_opcion1 = opcion1_eth * eth_precio_estimado
-            usd_opcion2 = opcion2_eth * eth_precio_estimado
-            
-            tokens_opcion1 = usd_opcion1 / precio_usd
-            tokens_opcion2 = usd_opcion2 / precio_usd
+            tokens_opcion1 = (opcion1_eth * eth_precio_estimated) / precio_usd
+            tokens_opcion2 = (opcion2_eth * eth_precio_estimated) / precio_usd
 
             texto_token = (
                 f"📈 *Gema Detectada:* {nombre} (`{simbolo}`)\n"
-                f"💵 *Precio Actual:* `${precio_usd:.6f} USD`\n"
-                f"📍 *Contrato:* `{token_address}`\n\n"
+                f"💵 *Precio Actual:* `${precio_usd:.6f} USD`\n\n"
                 f"💬 *Selecciona tu monto de compra:* \n"
-                f"• 🟢 *{opcion1_eth} ETH* (~${usd_opcion1:.2f} USD) ➔ Recibes: `{tokens_opcion1:,.2f}` {simbolo}\n"
-                f"• 🟢 *{opcion2_eth} ETH* (~${usd_opcion2:.2f} USD) ➔ Recibes: `{tokens_opcion2:,.2f}` {simbolo}"
+                f"• 🟢 *{opcion1_eth} ETH* (~${(opcion1_eth*3500):.2f} USD) ➔ `{tokens_opcion1:,.2f}` {simbolo}\n"
+                f"• 🟢 *{opcion2_eth} ETH* (~${(opcion2_eth*3500):.2f} USD) ➔ `{tokens_opcion2:,.2f}` {simbolo}"
             )
             
             keyboard = [
@@ -301,14 +308,17 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton(f"🟢 {opcion1_eth} ETH", callback_data=f"buy_token_{opcion1_eth}_{simbolo}"),
                     InlineKeyboardButton(f"🟢 {opcion2_eth} ETH", callback_data=f"buy_token_{opcion2_eth}_{simbolo}")
                 ],
-                [InlineKeyboardButton("❌ Cancelar Orden", callback_data="back_main")]
+                [
+                    InlineKeyboardButton("✍️ Otro Monto (Custom)", callback_data="pedir_monto_custom"),
+                    InlineKeyboardButton("❌ Cancelar", callback_data="back_main")
+                ]
             ]
             await status_msg.edit_text(text=texto_token, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
             
         except Exception:
             await status_msg.edit_text("❌ El contrato no tiene un pool de liquidez activo en la red Base.")
     else:
-        await update.message.reply_text("👋 Envía un contrato válido de Base (Ej: empezando con `0x`).")
+        await update.message.reply_text("👋 Envía un contrato válido de Base (Ej: empezando con `0x`) o introduce un número válido.")
 
 # --- CONTROLADOR CALLBACK ---
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -350,6 +360,15 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         actualizar_preferencia(user_id, "auto_buy_amount", nuevo_monto)
         texto, reply_markup = generar_menu_settings(user_id)
         await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
+        return
+
+    if query.data == "pedir_monto_custom":
+        simbolo = context.user_data.get("current_token_symbol", "TOKEN")
+        context.user_data["esperando_monto_token"] = simbolo
+        await query.edit_message_text(
+            text=f"✍️ *MONTO PERSONALIZADO PARA #{simbolo}*\n\nEscribe aquí abajo directamente la cantidad exacta de ETH que deseas invertir.\n\n_Ejemplo: `0.007` o `0.015`_",
+            parse_mode="Markdown"
+        )
         return
 
     if query.data == "exportar_key":
