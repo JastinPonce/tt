@@ -40,12 +40,12 @@ def init_db():
             address TEXT UNIQUE,
             encrypted_private_key TEXT,
             auto_buy INTEGER DEFAULT 0,
-            auto_buy_amount REAL DEFAULT 0.05,
+            auto_buy_amount REAL DEFAULT 0.002,
             referido_por INTEGER,
             contador_referidos INTEGER DEFAULT 0
         )
     """)
-    # NUEVA: Tabla de Historial de Transacciones
+    # Tabla de Historial de Transacciones
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS historial (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,7 +141,7 @@ def obtener_balance_real(address):
     except Exception:
         return 0.0
 
-# --- MENÚS DE INTERFAZ MIGRADOS ---
+# --- MENÚS DE INTERFAZ ---
 def generar_menu_principal(user_id):
     user_data = obtener_usuario(user_id)
     wallet_address = user_data["address"]
@@ -150,7 +150,6 @@ def generar_menu_principal(user_id):
     wallet_corta = f"`{wallet_address}`" 
     status_sniper = "🟢 Activo" if user_data["auto_buy"] else "🔴 Inactivo"
     
-    # Renderizar el historial dinámicamente si existen datos
     trades = obtener_ultimas_transacciones(user_id)
     texto_historial = ""
     if trades:
@@ -166,7 +165,7 @@ def generar_menu_principal(user_id):
         f"💳 *Wallet (Toca para copiar):*\n{wallet_corta}\n\n"
         f"💰 *Balance:* `{balance:.4f} ETH`\n"
         f"🎯 *Modo Sniper:* {status_sniper}\n\n"
-        f"{texto_historial}"  # Inserción del bloque de historial
+        f"{texto_historial}"
         f"─── — — — — — — — — — ───\n"
         f"⚡ *¿Cómo empezar a operar?*\n"
         f"Pega el contrato de cualquier token de Base aquí abajo para analizar su liquidez."
@@ -213,11 +212,13 @@ def generar_menu_settings(user_id):
     user_data = obtener_usuario(user_id)
     status_emoji = "🟢 ACTIVADO" if user_data["auto_buy"] else "🔴 DESACTIVADO"
     monto = user_data["auto_buy_amount"]
+    eth_precio_estimado = 3500.0
+    monto_usd = monto * eth_precio_estimado
     
     texto_settings = (
         f"⚙️ *PANEL DE CONFIGURACIÓN*\n\n"
         f"🚀 *Compra Automática (Auto-Buy):* `{status_emoji}`\n"
-        f"💵 *Monto por Defecto:* `{monto} ETH`\n"
+        f"💵 *Monto Sniper:* `{monto} ETH` (~${monto_usd:.2f} USD)\n"
         f"🔒 *Seguridad:* Encriptado simétrico AES-256"
     )
     keyboard = [
@@ -230,30 +231,40 @@ def generar_menu_settings(user_id):
     ]
     return texto_settings, InlineKeyboardMarkup(keyboard)
 
-# --- DETECTAR CONTRATOS CON BOTÓN CUSTOM ---
+# --- DETECTAR CONTRATOS E INTERCEPTOR CUSTOM ---
 async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     inicializar_usuario_si_no_existe(user_id)
     user_data = obtener_usuario(user_id)
     texto_usuario = update.message.text.strip()
     
-    # SI EL USUARIO ENVÍA UN NÚMERO (Es porque usó el botón de monto personalizado)
-    try:
-        monto_custom = float(texto_usuario)
-        if "esperando_monto_token" in context.user_data:
+    # CONTROL DE FLUJO: Comprobamos si el bot está esperando activamente un monto numérico
+    if context.user_data.get("esperando_monto_token"):
+        try:
+            monto_custom = float(texto_usuario)
+            if monto_custom <= 0:
+                await update.message.reply_text("❌ Por favor, introduce un número mayor que 0.")
+                return
+                
             simbolo = context.user_data["esperando_monto_token"]
-            del context.user_data["esperando_monto_token"] # Limpiar estado
+            # Limpiamos estados de memoria de inmediato
+            context.user_data["esperando_monto_token"] = None
+            if "current_token_symbol" in context.user_data:
+                del context.user_data["current_token_symbol"]
             
             registrar_transaccion(user_id, "COMPRA", monto_custom, simbolo)
+            
             await update.message.reply_text(
-                f"🚀 *¡Orden Ejecutada con Monto Personalizado!*\n\n🛒 Comprando {simbolo} por *{monto_custom} ETH* (~${(monto_custom * 3500):.2f} USD)...\n\n_Revisa tu panel principal para ver el historial._",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver", callback_data="back_main")]]),
+                f"🚀 *¡Orden Ejecutada con Monto Personalizado!*\n\n🛒 Comprando {simbolo} por *{monto_custom} ETH* (~${(monto_custom * 3500):.2f} USD)...\n\n_Revisa tu panel principal para ver el historial actualizado._",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver al Panel", callback_data="back_main")]]),
                 parse_mode="Markdown"
             )
             return
-    except ValueError:
-        pass # No era un número, procedemos a ver si es un contrato
+        except ValueError:
+            await update.message.reply_text("⚠️ Entrada inválida. Introduce únicamente un número decimal válido (Ej: `0.007`) o cancela la operación.")
+            return
 
+    # Si no estaba esperando un monto personalizado, procesamos si es una dirección de contrato
     if w3.is_address(texto_usuario):
         token_address = w3.to_checksum_address(texto_usuario)
         status_msg = await update.message.reply_text("🔍 _Consultando nodos de Base y liquidez... [⏳]_", parse_mode="Markdown")
@@ -263,7 +274,6 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nombre = contrato.functions.name().call()
             simbolo = contrato.functions.symbol().call()
             
-            # Guardar el símbolo en el contexto por si quiere usar monto personalizado
             context.user_data["current_token_symbol"] = simbolo
             
             precio_usd = 0.0
@@ -290,6 +300,7 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
+            # Opciones de montos pequeños coherentes
             opcion1_eth = 0.002
             opcion2_eth = 0.005
             tokens_opcion1 = (opcion1_eth * eth_precio_estimated) / precio_usd
@@ -318,126 +329,7 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await status_msg.edit_text("❌ El contrato no tiene un pool de liquidez activo en la red Base.")
     else:
-        await update.message.reply_text("👋 Envía un contrato válido de Base (Ej: empezando con `0x`) o introduce un número válido.")
+        await update.message.reply_text("👋 Envía un contrato válido de Base (Ej: empezando con `0x`).")
 
 # --- CONTROLADOR CALLBACK ---
-async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = update.effective_user.id
-    inicializar_usuario_si_no_existe(user_id)
-    user_data = obtener_usuario(user_id)
-    
-    if query.data == "back_main":
-        texto, reply_markup = generar_menu_principal(user_id)
-        await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
-        return
-
-    if query.data == "ver_referidos":
-        bot_info = await context.bot.get_me()
-        bot_username = bot_info.username.replace("_", "\\_")
-        texto, reply_markup = generar_menu_referidos(user_id, bot_username)
-        await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
-        return
-
-    if query.data == "abrir_settings":
-        texto, reply_markup = generar_menu_settings(user_id)
-        await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
-        return
-
-    if query.data == "toggle_autobuy":
-        nuevo_estado = 1 if not user_data["auto_buy"] else 0
-        actualizar_preferencia(user_id, "auto_buy", nuevo_estado)
-        texto, reply_markup = generar_menu_settings(user_id)
-        await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
-        return
-
-    if query.data == "config_monto":
-        montos_disponibles = [0.05, 0.1, 0.25, 0.5]
-        idx_actual = montos_disponibles.index(user_data["auto_buy_amount"])
-        nuevo_monto = montos_disponibles[(idx_actual + 1) % len(montos_disponibles)]
-        actualizar_preferencia(user_id, "auto_buy_amount", nuevo_monto)
-        texto, reply_markup = generar_menu_settings(user_id)
-        await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
-        return
-
-    if query.data == "pedir_monto_custom":
-        simbolo = context.user_data.get("current_token_symbol", "TOKEN")
-        context.user_data["esperando_monto_token"] = simbolo
-        await query.edit_message_text(
-            text=f"✍️ *MONTO PERSONALIZADO PARA #{simbolo}*\n\nEscribe aquí abajo directamente la cantidad exacta de ETH que deseas invertir.\n\n_Ejemplo: `0.007` o `0.015`_",
-            parse_mode="Markdown"
-        )
-        return
-
-    if query.data == "exportar_key":
-        key_encriptada = user_data["encrypted_private_key"]
-        key_desencriptada = cipher_suite.decrypt(key_encriptada.encode()).decode()
-        texto_key = f"🔑 *TU CLAVE PRIVADA:*\n\n`{key_desencriptada}`\n\n⚠️ No la compartas."
-        keyboard = [[InlineKeyboardButton("⬅️ Regresar", callback_data="abrir_settings")]]
-        await query.edit_message_text(text=texto_key, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        return
-
-    if query.data == "ver_wallet":
-        texto_wallet = f"📥 *DIRECCIÓN DE DEPÓSITO*\n\n`{user_data['address']}`\n\n⚠️ Usa únicamente la red Base Mainnet."
-        keyboard = [[InlineKeyboardButton("⬅️ Regresar", callback_data="back_main")]]
-        await query.edit_message_text(text=texto_wallet, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        return
-        
-    if query.data == "retirar_fondos":
-        await query.edit_message_text(
-            text="📤 *RETIRAR BALANCE*\n\nUsa `/retirar [dirección] [monto]`.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Regresar", callback_data="back_main")]]),
-            parse_mode="Markdown"
-        )
-        return
-
-    if query.data.startswith("buy_token_"):
-        partes = query.data.split("_")
-        monto = float(partes[2])
-        token_name = partes[3]
-        
-        # REGISTRO EN EL HISTORIAL DESDE BOTÓN MANUAL
-        registrar_transaccion(user_id, "COMPRA", monto, token_name)
-        
-        reparto_texto = f"🚀 *¡Orden Ejecutada!*\n\n🛒 Comprando {token_name} por *{monto} ETH*...\n\n_Regresa al panel y actualízalo para ver el historial._"
-        keyboard = [[InlineKeyboardButton("⬅️ Volver al Panel", callback_data="back_main")]]
-        await query.edit_message_text(text=reparto_texto, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        return
-
-# --- COMANDO START ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    args = context.args
-    padrino_id = None
-    
-    if args and args[0].isdigit():
-        posible_padrino = int(args[0])
-        if posible_padrino != user_id:
-            padrino_id = posible_padrino
-            
-    inicializar_usuario_si_no_existe(user_id, referido_por=padrino_id)
-    texto, reply_markup = generar_menu_principal(user_id)
-    await update.message.reply_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
-
-class HealthCheckServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Operational")
-
-if __name__ == "__main__":
-    PORT = int(os.environ.get("PORT", 8080))
-    TOKEN = os.environ.get("TELEGRAM_TOKEN")
-    
-    def iniciar_servidor():
-        HTTPServer(("0.0.0.0", PORT), HealthCheckServer).serve_forever()
-        
-    threading.Thread(target=iniciar_servidor, daemon=True).start()
-
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(menu_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, detectar_token))
-    application.run_polling()
+async def menu_callback(update: Update
