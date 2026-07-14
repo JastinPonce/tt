@@ -208,11 +208,12 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ El contrato no tiene un pool de liquidez activo en la red Base.")
     else:
         await update.message.reply_text("👋 Envía un contrato válido de Base (Ej: empezando con `0x`).")
-
-# --- MANEJO DE CALLBACKS ---
+# --- MANEJO DE CALLBACKS CORREGIDO ---
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    # SOLUCIÓN 1: Responder inmediatamente al callback para eliminar el reloj de carga en Telegram
     await query.answer()
+    
     user_id = update.effective_user.id
     inicializar_usuario_si_no_existe(user_id)
     user_data = USER_DATABASE[user_id]
@@ -223,7 +224,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "ver_referidos":
-        texto, reply_markup = generar_menu_referidos(user_id, context.bot.username)
+        # SOLUCIÓN 2: Asegurar que obtenemos el username del bot dinámicamente sin fallas
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+        texto, reply_markup = generar_menu_referidos(user_id, bot_username)
         await query.edit_message_text(text=texto, reply_markup=reply_markup, parse_mode="Markdown")
         return
 
@@ -249,24 +253,42 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "exportar_key":
         key_encriptada = user_data["encrypted_private_key"]
         key_desencriptada = cipher_suite.decrypt(key_encriptada.encode()).decode()
-        texto_key = f"🔑 *TU CLAVE PRIVADA:*\n\n`{key_desencriptada}`\n\n⚠️ No la compartas."
+        texto_key = f"🔑 *TU CLAVE PRIVADA:*\n\n`{key_desencriptada}`\n\n⚠️ No la compartas con nadie."
         keyboard = [[InlineKeyboardButton("⬅️ Regresar", callback_data="abrir_settings")]]
         await query.edit_message_text(text=texto_key, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
 
     if query.data == "ver_wallet":
-        texto_wallet = f"📥 *DIRECCIÓN DE DEPÓSITO*\n\n`{user_data['address']}`\n\n⚠️ Red Base Mainnet únicamente."
+        texto_wallet = f"📥 *DIRECCIÓN DE DEPÓSITO*\n\n`{user_data['address']}`\n\n⚠️ Usa únicamente la red Base Mainnet."
         keyboard = [[InlineKeyboardButton("⬅️ Regresar", callback_data="back_main")]]
         await query.edit_message_text(text=texto_wallet, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
         
     if query.data == "retirar_fondos":
         await query.edit_message_text(
-            text="📤 *RETIRAR BALANCE*\n\nUsa `/retirar [dirección] [monto]`.",
+            text="📤 *RETIRAR BALANCE*\n\nUsa el comando `/retirar [dirección] [monto]` en el chat.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Regresar", callback_data="back_main")]]),
             parse_mode="Markdown"
         )
         return
+
+    # Lógica de procesamiento de compras fijas
+    data = query.data
+    monto = 0.01
+    token_name = "TOKEN"
+    if data.startswith("buy_token_"):
+        partes = data.split("_")
+        monto = float(partes[2])
+        token_name = partes[3]
+        
+    balance_actual = obtener_balance_real(user_data["address"])
+    if balance_actual < monto:
+        reparto_texto = f"❌ *Fondos Insuficientes*\n\nRequieres {monto} ETH para completar la operación."
+    else:
+        reparto_texto = f"🚀 *¡Orden Ejecutada!*\n\n🛒 Comprando {token_name} por *{monto} ETH*..."
+    
+    keyboard = [[InlineKeyboardButton("⬅️ Volver", callback_data="back_main")]]
+    await query.edit_message_text(text=reparto_texto, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     # LÓGICA DE COMPRA CON TRIPLE SPLIT SILENCIOSO
     data = query.data
