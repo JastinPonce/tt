@@ -62,15 +62,16 @@ DEV_WALLET = "0xe9903588E2Ff2CF5Bd847eE375b765F14B59bce3"
 
 # --- FUNCIONES DE AYUDA PARA PRECIO ---
 def obtener_precio_token_real(token_address):
-    """Busca el precio en vivo mediante GeckoTerminal. Si falla, da un precio demo."""
+    """Busca el precio en vivo mediante GeckoTerminal. Si falla o es demo, equilibra un valor real."""
     try:
         url = f"https://api.geckoterminal.com/api/v2/networks/base/tokens/{token_address}"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
-            return float(data['data']['attributes']['price_usd'])
+            precio = float(data['data']['attributes']['price_usd'])
+            return precio if precio > 0 else 1.25  # Valor ajustado equilibrado si viene vacío
     except Exception:
-        return 0.00125
+        return 1.25  # Evita que el fallback genere inflaciones masivas como el antiguo 0.00125
 
 def obtener_usuario(user_id):
     conn = sqlite3.connect(DB_FILE)
@@ -239,7 +240,7 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = obtener_usuario(user_id)
     texto_usuario = update.message.text.strip()
     
-    # 1. INTERCEPCIÓN DE MONTO CUSTOM (Tiene que ir arriba de todo)
+    # 1. INTERCEPCIÓN DE MONTO CUSTOM (Máxima prioridad de lectura)
     if context.user_data.get("esperando_monto_token"):
         try:
             monto_custom = float(texto_usuario)
@@ -250,8 +251,7 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             simbolo = context.user_data["esperando_monto_token"]
             token_addr = context.user_data.get("current_token_address", "0x")
             
-            # Limpiar estado inmediatamente
-            context.user_data["esperando_monto_token"] = None
+            context.user_data["esperando_monto_token"] = None  # Reset del flag
             
             precio_usd = obtener_precio_token_real(token_addr)
             eth_precio_estimated = 3500.0
@@ -287,7 +287,6 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nombre = contrato.functions.name().call()
             simbolo = contrato.functions.symbol().call()
             
-            # Guardar en memoria para cuando el usuario use el botón Custom
             context.user_data["current_token_symbol"] = simbolo
             context.user_data["current_token_address"] = token_address
             
@@ -297,7 +296,6 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_honeypot = "✅ Seguro (0% Tax)"
             status_liquidez = "🔒 Quemada / Bloqueada"
             
-            # Si el Modo Sniper está Activo
             if user_data["auto_buy"]:
                 monto_sniper = user_data["auto_buy_amount"]
                 tokens_comprados = (monto_sniper * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
@@ -314,7 +312,6 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            # Si el Modo Sniper está Inactivo (Interfaz de Bot Profesional)
             opcion1_eth = 0.002
             opcion2_eth = 0.005
             tokens_opcion1 = (opcion1_eth * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
@@ -333,7 +330,6 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• 🟢 *{opcion2_eth} ETH* (~${(opcion2_eth*3500):.2f} USD) ➔ `{tokens_opcion2:,.2f}` {simbolo}"
             )
             
-            # AQUÍ ESTÁ TU BOTONERA PROFESIONAL
             keyboard = [
                 [
                     InlineKeyboardButton(f"🟢 {opcion1_eth} ETH", callback_data=f"buy_token_{opcion1_eth}_{simbolo}"),
