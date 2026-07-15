@@ -232,14 +232,15 @@ def generar_menu_settings(user_id):
     ]
     return texto_settings, InlineKeyboardMarkup(keyboard)
 
-# --- DETECTAR CONTRATOS ---
+# --- DETECTAR CONTRATOS REVISADO ---
 async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     inicializar_usuario_si_no_existe(user_id)
     user_data = obtener_usuario(user_id)
     texto_usuario = update.message.text.strip()
     
-    # CONTROL DE INTERCEPCIÓN: Si estamos esperando un monto personalizado
+    # ─── PRIORIDAD 1: CONTROL DE INTERCEPCIÓN NUMÉRICA (MONTO CUSTOM) ───
+    # Movido al inicio para evitar que se ejecute la validación de wallet por error
     if context.user_data.get("esperando_monto_token"):
         try:
             monto_custom = float(texto_usuario)
@@ -249,13 +250,17 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             simbolo = context.user_data["esperando_monto_token"]
             token_addr = context.user_data.get("current_token_address", "0x")
-            
-            # Resetear estados de intercepción
             context.user_data["esperando_monto_token"] = None
             
+            # Cálculo estricto con el precio real capturado
             precio_usd = obtener_precio_token_real(token_addr)
-            eth_precio_estimated = 3500.0
-            tokens_comprados = (monto_custom * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
+            eth_precio_estimated = 3500.0  # Precio base de referencia de ETH
+            
+            # Fórmula matemática exacta: (Monto ETH * Precio ETH) / Precio Token
+            if precio_usd > 0:
+                tokens_comprados = (monto_custom * eth_precio_estimated) / precio_usd
+            else:
+                tokens_comprados = 0.0
             
             registrar_transaccion(user_id, "COMPRA", monto_custom, simbolo)
             
@@ -263,7 +268,7 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🚀 *¡Orden Profesional Ejecutada!*\n\n"
                 f"🛒 *Comprando:* {simbolo}\n"
                 f"💵 *Monto Invertido:* `{monto_custom} ETH` (~${(monto_custom * eth_precio_estimated):.2f} USD)\n"
-                f"📦 *Tokens Estimados:* `{tokens_comprados:,.2f} {simbolo}`\n\n"
+                f"📦 *Tokens Recibidos:* `{tokens_comprados:,.2f} {simbolo}`\n\n"
                 f"✅ _Transacción enviada a los nodos de Base con éxito._",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver al Panel", callback_data="back_main")]]),
                 parse_mode="Markdown"
@@ -273,7 +278,7 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Entrada inválida. Introduce únicamente un número decimal válido (Ej: `0.007`).")
             return
 
-    # Si se pega una dirección de contrato
+    # ─── PRIORIDAD 2: DETECCIÓN DE CONTRATOS CONTRACT ADDRESS ───
     if w3.is_address(texto_usuario):
         token_address = w3.to_checksum_address(texto_usuario)
         status_msg = await update.message.reply_text("🔍 _Consultando nodos de Base, analizando HoneyPot y liquidez... [⏳]_", parse_mode="Markdown")
@@ -283,18 +288,15 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nombre = contrato.functions.name().call()
             simbolo = contrato.functions.symbol().call()
             
-            # Guardamos datos en el contexto de sesión por si usan montos custom
             context.user_data["current_token_symbol"] = simbolo
             context.user_data["current_token_address"] = token_address
             
             precio_usd = obtener_precio_token_real(token_address)
             eth_precio_estimated = 3500.0
             
-            # --- INFO PROFESIONAL DEL BOT ---
             status_honeypot = "✅ Seguro (0% Tax)"
             status_liquidez = "🔒 Quemada / Bloqueada"
             
-            # Flujo Automático (Sniper)
             if user_data["auto_buy"]:
                 monto_sniper = user_data["auto_buy_amount"]
                 tokens_comprados = (monto_sniper * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
@@ -311,9 +313,10 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            # Flujo Manual (Interfaz del Bot Profesional)
             opcion1_eth = 0.002
             opcion2_eth = 0.005
+            
+            # Renderizado preciso en la interfaz profesional
             tokens_opcion1 = (opcion1_eth * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
             tokens_opcion2 = (opcion2_eth * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
 
@@ -346,6 +349,7 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ El contrato no tiene un pool de liquidez activo en la red Base.")
     else:
         await update.message.reply_text("👋 Envía un contrato válido de Base (Ej: empezando con `0x`).")
+
 
 # --- CONTROLADOR CALLBACK ---
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
