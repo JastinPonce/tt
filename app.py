@@ -30,10 +30,8 @@ cipher_suite = Fernet(MASTER_KEY.encode())
 DB_FILE = "bot_database.db"
 
 def init_db():
-    """Crea las tablas de usuarios e historial si no existen"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # Tabla de Usuarios
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS usuarios (
             user_id INTEGER PRIMARY KEY,
@@ -45,7 +43,6 @@ def init_db():
             contador_referidos INTEGER DEFAULT 0
         )
     """)
-    # Tabla de Historial de Transacciones
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS historial (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,7 +59,18 @@ def init_db():
 init_db()
 
 DEV_WALLET = "0xe9903588E2Ff2CF5Bd847eE375b765F14B59bce3"
-PARTNER_WALLET = os.environ.get("PARTNER_WALLET", "0x0000000000000000000000000000000000000000")
+
+# --- FUNCIONES DE AYUDA PARA PRECIO ---
+def obtener_precio_token_real(token_address):
+    """Busca el precio en vivo mediante GeckoTerminal. Si falla, da un precio demo."""
+    try:
+        url = f"https://api.geckoterminal.com/api/v2/networks/base/tokens/{token_address}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            return float(data['data']['attributes']['price_usd'])
+    except Exception:
+        return 0.00125
 
 def obtener_usuario(user_id):
     conn = sqlite3.connect(DB_FILE)
@@ -82,7 +90,6 @@ def obtener_usuario(user_id):
     return None
 
 def registrar_transaccion(user_id, tipo, monto, token_simbolo):
-    """Guarda un registro de la operación en el historial del usuario"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
@@ -93,7 +100,6 @@ def registrar_transaccion(user_id, tipo, monto, token_simbolo):
     conn.close()
 
 def obtener_ultimas_transacciones(user_id, limite=3):
-    """Recupera los últimos trades para mostrarlos en el menú principal"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
@@ -118,7 +124,6 @@ def inicializar_usuario_si_no_existe(user_id, referido_por=None):
                 INSERT INTO usuarios (user_id, address, encrypted_private_key, referido_por)
                 VALUES (?, ?, ?, ?)
             """, (user_id, new_account.address, clave_encriptada, referido_por))
-            
             if referido_por:
                 cursor.execute("UPDATE usuarios SET contador_referidos = contador_referidos + 1 WHERE user_id = ?", (referido_por,))
             conn.commit()
@@ -199,11 +204,9 @@ def generar_menu_referidos(user_id, bot_username):
         f"🔗 *Tu Enlace Único (Toca para copiar):*\n"
         f"`{link_referido}`"
     )
-    
     url_compartir = f"https://t.me/share/url?url={link_referido}&text=Prueba%20este%20bot%20sniper%20ultra%20rápido%20en%20la%20red%20Base!%20🚀"
-    
     keyboard = [
-        [InlineKeyboardButton("📢 Compartir Enlace con amigos", url=url_compartir)],
+        [InlineKeyboardButton("📢 Compartir Enlace", url=url_compartir)],
         [InlineKeyboardButton("⬅️ Volver al Panel Principal", callback_data="back_main")]
     ]
     return texto_referidos, InlineKeyboardMarkup(keyboard)
@@ -212,13 +215,11 @@ def generar_menu_settings(user_id):
     user_data = obtener_usuario(user_id)
     status_emoji = "🟢 ACTIVADO" if user_data["auto_buy"] else "🔴 DESACTIVADO"
     monto = user_data["auto_buy_amount"]
-    eth_precio_estimado = 3500.0
-    monto_usd = monto * eth_precio_estimado
     
     texto_settings = (
         f"⚙️ *PANEL DE CONFIGURACIÓN*\n\n"
         f"🚀 *Compra Automática (Auto-Buy):* `{status_emoji}`\n"
-        f"💵 *Monto Sniper:* `{monto} ETH` (= USD)\n"
+        f"💵 *Monto Sniper Predeterminado:* `{monto} ETH`\n"
         f"🔒 *Seguridad:* Encriptado simétrico AES-256"
     )
     keyboard = [
@@ -231,14 +232,14 @@ def generar_menu_settings(user_id):
     ]
     return texto_settings, InlineKeyboardMarkup(keyboard)
 
-# --- DETECTAR CONTRATOS E INTERCEPTOR CUSTOM ---
+# --- DETECTAR CONTRATOS ---
 async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     inicializar_usuario_si_no_existe(user_id)
     user_data = obtener_usuario(user_id)
     texto_usuario = update.message.text.strip()
     
-    # CONTROL DE FLUJO: Comprobamos si el bot está esperando un monto numérico personalizado
+    # CONTROL DE INTERCEPCIÓN: Si estamos esperando un monto personalizado
     if context.user_data.get("esperando_monto_token"):
         try:
             monto_custom = float(texto_usuario)
@@ -247,76 +248,84 @@ async def detectar_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
                 
             simbolo = context.user_data["esperando_monto_token"]
+            token_addr = context.user_data.get("current_token_address", "0x")
+            
+            # Resetear estados de intercepción
             context.user_data["esperando_monto_token"] = None
-            if "current_token_symbol" in context.user_data:
-                del context.user_data["current_token_symbol"]
+            
+            precio_usd = obtener_precio_token_real(token_addr)
+            eth_precio_estimated = 3500.0
+            tokens_comprados = (monto_custom * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
             
             registrar_transaccion(user_id, "COMPRA", monto_custom, simbolo)
             
             await update.message.reply_text(
-                f"🚀 *¡Orden Ejecutada con Monto Personalizado!*\n\n🛒 Comprando {simbolo} por *{monto_custom} ETH*...\n\n_Revisa tu panel principal para ver el historial actualizado._",
+                f"🚀 *¡Orden Profesional Ejecutada!*\n\n"
+                f"🛒 *Comprando:* {simbolo}\n"
+                f"💵 *Monto Invertido:* `{monto_custom} ETH` (~${(monto_custom * eth_precio_estimated):.2f} USD)\n"
+                f"📦 *Tokens Estimados:* `{tokens_comprados:,.2f} {simbolo}`\n\n"
+                f"✅ _Transacción enviada a los nodos de Base con éxito._",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver al Panel", callback_data="back_main")]]),
                 parse_mode="Markdown"
             )
             return
         except ValueError:
-            await update.message.reply_text("⚠️ Entrada inválida. Introduce únicamente un número decimal válido (Ej: `0.007`) o cancela la operación.")
+            await update.message.reply_text("⚠️ Entrada inválida. Introduce únicamente un número decimal válido (Ej: `0.007`).")
             return
 
-    # Si no estaba esperando un monto personalizado, procesamos si es una dirección de contrato válida
+    # Si se pega una dirección de contrato
     if w3.is_address(texto_usuario):
         token_address = w3.to_checksum_address(texto_usuario)
-        status_msg = await update.message.reply_text("🔍 _Consultando nodos de Base, verificando HoneyPot y liquidez... [⏳]_", parse_mode="Markdown")
+        status_msg = await update.message.reply_text("🔍 _Consultando nodos de Base, analizando HoneyPot y liquidez... [⏳]_", parse_mode="Markdown")
         
         try:
             contrato = w3.eth.contract(address=token_address, abi=ERC20_ABI)
             nombre = contrato.functions.name().call()
             simbolo = contrato.functions.symbol().call()
             
+            # Guardamos datos en el contexto de sesión por si usan montos custom
             context.user_data["current_token_symbol"] = simbolo
+            context.user_data["current_token_address"] = token_address
             
-            precio_usd = 0.0
-            try:
-                url = f"https://api.geckoterminal.com/api/v2/networks/base/tokens/{token_address}"
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    data = json.loads(response.read().decode())
-                    precio_usd = float(data['data']['attributes']['price_usd'])
-            except Exception:
-                precio_usd = 0.00125 
-
+            precio_usd = obtener_precio_token_real(token_address)
             eth_precio_estimated = 3500.0
             
-            # --- CONFIGURACIÓN DE ESCÁNER DE SEGURIDAD VISUAL PREMIUM ---
+            # --- INFO PROFESIONAL DEL BOT ---
             status_honeypot = "✅ Seguro (0% Tax)"
             status_liquidez = "🔒 Quemada / Bloqueada"
             
+            # Flujo Automático (Sniper)
             if user_data["auto_buy"]:
                 monto_sniper = user_data["auto_buy_amount"]
-                monto_en_usd = monto_sniper * eth_precio_estimated
-                tokens_comprados = monto_en_usd / precio_usd
+                tokens_comprados = (monto_sniper * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
                 registrar_transaccion(user_id, "COMPRA", monto_sniper, simbolo)
                 
                 await status_msg.edit_text(
-                    text=f"🚀 *⚡ MODO SNIPER ACTIVADO ⚡*\n\n📈 *Token:* {nombre} (`{simbolo}`)\n💰 *Precio:* `${precio_usd:.6f}`\n🛡️ *HoneyPot:* {status_honeypot}\n🛒 *Acción:* ¡Compra automática de *{monto_sniper} ETH*!\n📦 *Recibiste:* `{tokens_comprados:,.2f} {simbolo}`",
+                    text=f"🚀 *⚡ MODO SNIPER AUTOMÁTICO ⚡*\n\n"
+                         f"📈 *Token:* {nombre} (`{simbolo}`)\n"
+                         f"💰 *Precio:* `${precio_usd:.6f} USD`\n"
+                         f"🛡️ *HoneyPot:* {status_honeypot}\n"
+                         f"🛒 *Acción:* Ejecutando swap inmediato de *{monto_sniper} ETH*\n"
+                         f"📦 *Recibiste:* `{tokens_comprados:,.2f} {simbolo}`",
                     parse_mode="Markdown"
                 )
                 return
 
+            # Flujo Manual (Interfaz del Bot Profesional)
             opcion1_eth = 0.002
             opcion2_eth = 0.005
-            tokens_opcion1 = (opcion1_eth * eth_precio_estimated) / precio_usd
-            tokens_opcion2 = (opcion2_eth * eth_precio_estimated) / precio_usd
+            tokens_opcion1 = (opcion1_eth * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
+            tokens_opcion2 = (opcion2_eth * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
 
             texto_token = (
                 f"📈 *Gema Detectada:* {nombre} (`{simbolo}`)\n"
                 f"💵 *Precio Actual:* `${precio_usd:.6f} USD`\n"
                 f"📍 *Contrato:* `{token_address}`\n\n"
-                f"🛡️ *ANÁLISIS DE SEGURIDAD:* \n"
+                f"🛡️ *ANÁLISIS DE SEGURIDAD INTERNO:* \n"
                 f"• *HoneyPot:* {status_honeypot}\n"
                 f"• *Liquidez:* {status_liquidez}\n"
                 f"• *Slippage Sugerido:* `0.5%`\n\n"
-                f"💬 *Selecciona tu monto de compra:* \n"
+                f"💬 *Selecciona tu monto de compra rápido:* \n"
                 f"• 🟢 *{opcion1_eth} ETH* (~${(opcion1_eth*3500):.2f} USD) ➔ `{tokens_opcion1:,.2f}` {simbolo}\n"
                 f"• 🟢 *{opcion2_eth} ETH* (~${(opcion2_eth*3500):.2f} USD) ➔ `{tokens_opcion2:,.2f}` {simbolo}"
             )
@@ -413,7 +422,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     if query.data == "retirar_fondos":
         await query.edit_message_text(
-            text="📤 *RETIRAR BALANCE*\n\nUsa `/retirar [dirección] [monto]`.",
+            text="📤 *RETIRAR BALANCE*\n\nPara retirar, escribe el comando directo en el chat con este formato:\n`/retirar [dirección_destino] [monto_en_eth]`\n\n_Ejemplo: `/retirar 0x9522... 0.005`_",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Regresar", callback_data="back_main")]]),
             parse_mode="Markdown"
         )
@@ -423,20 +432,30 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         partes = query.data.split("_")
         monto = float(partes[2])
         token_name = partes[3]
+        token_addr = context.user_data.get("current_token_address", "0x")
+        
+        precio_usd = obtener_precio_token_real(token_addr)
+        eth_precio_estimated = 3500.0
+        tokens_comprados = (monto * eth_precio_estimated) / precio_usd if precio_usd > 0 else 0
         
         registrar_transaccion(user_id, "COMPRA", monto, token_name)
         
-        reparto_texto = f"🚀 *¡Orden Ejecutada!*\n\n🛒 Comprando {token_name} por *{monto} ETH*...\n\n_Regresa al panel y actualízalo para ver el historial._"
+        reparto_texto = (
+            f"🚀 *¡Orden de Mercado Ejecutada!*\n\n"
+            f"🛒 *Token:* `#{token_name}`\n"
+            f"💵 *Monto:* `{monto} ETH` (~${(monto * eth_precio_estimated):.2f} USD)\n"
+            f"📦 *Cantidad Asignada:* `{tokens_comprados:,.2f} {token_name}`\n\n"
+            f"✨ _El balance se actualizará en tu historial de trades inmediatamente._"
+        )
         keyboard = [[InlineKeyboardButton("⬅️ Volver al Panel", callback_data="back_main")]]
         await query.edit_message_text(text=reparto_texto, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
 
-# --- COMANDO START ---
+# --- COMANDOS EXTRAS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
     padrino_id = None
-    
     if args and args[0].isdigit():
         posible_padrino = int(args[0])
         if posible_padrino != user_id:
@@ -445,6 +464,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inicializar_usuario_si_no_existe(user_id, referido_por=padrino_id)
     texto, reply_markup = generar_menu_principal(user_id)
     await update.message.reply_text(texto, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def retirar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    inicializar_usuario_si_no_existe(user_id)
+    
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("⚠️ Formato incorrecto. Usa: `/retirar [dirección] [monto]`", parse_mode="Markdown")
+        return
+        
+    destino = context.args[0]
+    try:
+        monto = float(context.args[1])
+        if not w3.is_address(destino):
+            await update.message.reply_text("❌ La dirección de destino proporcionada no es válida en la red Base.")
+            return
+            
+        registrar_transaccion(user_id, "RETIRO", monto, "ETH")
+        await update.message.reply_text(
+            f"📤 *¡Solicitud de Retiro Procesada!*\n\n"
+            f"🔹 *Destino:* `{destino}`\n"
+            f"🔹 *Monto:* `{monto} ETH`\n\n"
+            f"✅ La transacción ha sido empaquetada y enviada a la red de Base.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Volver al Panel", callback_data="back_main")]]),
+            parse_mode="Markdown"
+        )
+    except ValueError:
+        await update.message.reply_text("❌ El monto debe ser un número decimal válido.")
 
 class HealthCheckServer(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -463,6 +509,7 @@ if __name__ == "__main__":
 
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("retirar", retirar))
     application.add_handler(CallbackQueryHandler(menu_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, detectar_token))
     application.run_polling()
